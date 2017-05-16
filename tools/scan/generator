@@ -2,10 +2,9 @@
 # =================================================================
 # generator -- OpenCL kernel Scan generator
 #
-# This is the main program for the kernel vectorization compiler,
-# which just parses command-line options, figures out which source
-# files to read and write to, and invokes the different stages
-# of the compiler properly.
+# This is the kernel generate program for parallel scan,
+# which just parse command-line options, figures out which template
+# must be used and append the selected template to the kernel file.
 #
 # Copyright (C) 2017, Marcio Machado Pereira
 # License: BSD
@@ -24,18 +23,15 @@ __kernel void scan (__global _dataType_ *input,
     int offset = 1;
  	/*Cache the computational window in shared memory*/
  	__local _dataType_ block [1024];
+ 	
  	block[tid] = input[gid];
- 	/*
- 	block[2 * tid] = input[2 * tid];
-	block[2 * tid + 1] = input[2 * tid + 1];
- 	*/
+ 	
  	/* build the sum in place up the tree */
 	for (int d = n >> 1; d > 0; d >>= 1) {
 		barrier (CLK_LOCAL_MEM_FENCE);
 		if (tid < d) {
 			int ai = offset * (2 * tid + 1) - 1;
 			int bi = offset * (2 * tid + 2) - 1;
-
 			block[bi] = block[bi] _operation_ block[ai];
 		}
 		offset *= 2;
@@ -61,7 +57,7 @@ __kernel void scan (__global _dataType_ *input,
 			int ai = offset * (2 * tid + 1) - 1;
 			int bi = offset * (2 * tid + 2) - 1;
 
-			int t = block[ai];
+			_dataType_ t = block[ai];
 			block[ai] = block[bi];
 			block[bi] = block[bi] _operation_ t;
 		}
@@ -69,16 +65,13 @@ __kernel void scan (__global _dataType_ *input,
 
 	barrier (CLK_LOCAL_MEM_FENCE);
 	input[gid] = block[tid];
-	/*
-	input[2 * tid] = block[2 * tid];
-	input[2 * tid + 1] = block[2 * tid + 1];
-	*/
 }
 
 __kernel void fix(__global _dataType_ *input,
-                  __global _dataType_ *S){
+                  __global _dataType_ *S) {
 	int bid = get_group_id(0);
 	int gid = get_global_id(0);
+	
 	input[gid] = input[gid] _operation_ S[bid];
 }
 
