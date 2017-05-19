@@ -152,18 +152,19 @@ __kernel void fix(__global _dataType_ *input1,
 
 def run_scan_generator():
     """ Runs the command-line of kernel scan generator. """
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 3:
         print("<<scan generator>> Input Error")
 
     filename = sys.argv[1]
     template = sys.argv[2]
+    _opName_ = sys.argv[3]
     with open(filename, 'a') as file:
         if template == "1":
-            file.write(SOURCE_1)
+            file.write(SOURCE_1.replace("_operation_", _opName_))
         elif template == "2":
-            file.write(SOURCE_2)
+            file.write(SOURCE_2.replace("_operation_", _opName_))
         else:
-            file.write(SOURCE_3)
+            file.write(SOURCE_3.replace("_operation_", _opName_))
         file.close()
 
     os.rename(filename, filename + ".cl")
