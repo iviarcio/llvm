@@ -1,1 +1,0 @@
-OpenCL kernel scan generator
