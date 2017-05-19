@@ -13,7 +13,7 @@
 import os
 import sys
 
-SOURCE = """
+SOURCE_1 = """
 __kernel void scan (__global _dataType_ *input,
                     __global _dataType_ *S,
                     const unsigned int n) {
@@ -38,7 +38,6 @@ __kernel void scan (__global _dataType_ *input,
 	}
 
 	/* scan back down the tree */
-
 	/* clear the last element */
 	barrier (CLK_LOCAL_MEM_FENCE);
 	S[bid] = block[n - 1];
@@ -74,18 +73,97 @@ __kernel void fix(__global _dataType_ *input,
 	
 	input[gid] = input[gid] _operation_ S[bid];
 }
-
 """
 
+SOURCE_2 = """
+__kernel void scan (__global _dataType_ *input,
+                    __global _dataType_ *S,
+                    const unsigned int n) {
+	int tid = get_local_id(0);
+	int gid = get_global_id(0);
+	int bid = get_group_id(0);
+    int offset = 1;
+ 	/*Cache the computational window in shared memory*/
+ 	__local _dataType_ block [1024];
+ 	
+ 	block[tid] = input[gid];
+ 	
+ 	/* build the sum in place up the tree */
+	for (int d = n >> 1; d > 0; d >>= 1) {
+		barrier (CLK_LOCAL_MEM_FENCE);
+		if (tid < d) {
+			int ai = offset * (2 * tid + 1) - 1;
+			int bi = offset * (2 * tid + 2) - 1;
+			block[bi] = _operation_(block[bi], block[ai]);
+		}
+		offset *= 2;
+	}
+
+	/* scan back down the tree */
+	/* clear the last element */
+	barrier (CLK_LOCAL_MEM_FENCE);
+	S[bid] = block[n - 1];
+	barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+	if (tid == 0) {
+		block[n - 1] = 0;
+	}
+
+	/* traverse down the tree building the scan in the place */
+	for (int d = 1; d < n ; d *= 2) {
+		offset >>= 1;
+		barrier (CLK_LOCAL_MEM_FENCE);
+		if (tid < d)
+		{
+			int ai = offset * (2 * tid + 1) - 1;
+			int bi = offset * (2 * tid + 2) - 1;
+
+			_dataType_ t = block[ai];
+			block[ai] = block[bi];
+			block[bi] = _operation_(block[bi], t);
+		}
+	}
+
+	barrier (CLK_LOCAL_MEM_FENCE);
+	input[gid] = block[tid];
+}
+
+__kernel void fix(__global _dataType_ *input,
+                  __global _dataType_ *S) {
+	int bid = get_group_id(0);
+	int gid = get_global_id(0);
+	
+	input[gid] = _operation_ (input[gid], S[bid]);
+}
+"""
+
+SOURCE_3 = """
+__kernel void scan (__global _dataType_ *input1,
+                    __global _dataType_ *input2,
+                    __global _dataType_ *S,
+                    const unsigned int n) {
+  /* todo template for 2 inputs */
+}
+
+__kernel void fix(__global _dataType_ *input1,
+                  __global _dataType_ *S) {
+}
+"""
 
 def run_scan_generator():
     """ Runs the command-line of kernel scan generator. """
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         print("<<scan generator>> Input Error")
 
     filename = sys.argv[1]
+    template = sys.argv[2]
     with open(filename, 'a') as file:
-        file.write(SOURCE)
+        if template == "1":
+            file.write(SOURCE_1)
+        elif template == "2":
+            file.write(SOURCE_2)
+        else:
+            file.write(SOURCE_3)
         file.close()
 
     os.rename(filename, filename + ".cl")
