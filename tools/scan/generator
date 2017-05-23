@@ -44,7 +44,7 @@ __kernel void scan (__global _dataType_ *input,
 	barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 
 	if (tid == 0) {
-		block[n - 1] = 0;
+		block[n - 1] = _initializer_;
 	}
 
 	/* traverse down the tree building the scan in the place */
@@ -99,14 +99,13 @@ __kernel void scan (__global _dataType_ *input,
 		offset *= 2;
 	}
 
-	/* scan back down the tree */
-	/* clear the last element */
+	/* scan back down the tree, clear the last element */
 	barrier (CLK_LOCAL_MEM_FENCE);
 	S[bid] = block[n - 1];
 	barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 
 	if (tid == 0) {
-		block[n - 1] = 0;
+		block[n - 1] = _operation__initializer;
 	}
 
 	/* traverse down the tree building the scan in the place */
@@ -157,14 +156,14 @@ def run_scan_generator():
 
     filename = sys.argv[1]
     template = sys.argv[2]
-    _opName_ = sys.argv[3]
+    operName = sys.argv[3]
     with open(filename, 'a') as file:
         if template == "1":
-            file.write(SOURCE_1.replace("_operation_", _opName_))
+            file.write(SOURCE_1.replace("_operation_", operName))
         elif template == "2":
-            file.write(SOURCE_2.replace("_operation_", _opName_))
+            file.write(SOURCE_2.replace("_operation_", operName))
         else:
-            file.write(SOURCE_3.replace("_operation_", _opName_))
+            file.write(SOURCE_3.replace("_operation_", operName))
         file.close()
 
     os.rename(filename, filename + ".cl")
