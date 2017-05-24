@@ -127,12 +127,14 @@ __kernel void scan (__global _dataType_ *input,
 	input[gid] = block[tid];
 }
 
-__kernel void fix(__global _dataType_ *input,
+__kernel void fix(__global _dataType_ *output,
+                  __global _dataType_ *input,
                   __global _dataType_ *S) {
 	int bid = get_group_id(0);
 	int gid = get_global_id(0);
 	
 	input[gid] = _operation_ (input[gid], S[bid]);
+	output[gid] = input[gid];
 }
 """
 
