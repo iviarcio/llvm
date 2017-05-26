@@ -156,7 +156,8 @@ def run_scan_generator():
             file.write(Oper_3_user.replace("_operation_", operName))
             file.write(Body_4 + Header_kernel_1 + Body_0)
             file.write(Oper_0_user.replace("_operation_", operName))
-            file.write(Body_1 + Body_3)
+            file.write(Body_1)
+            file.write(Body_3.replace("_initializer", "op_initializer"))
             file.write(Oper_3_user.replace("_operation_", operName))
             file.write(Body_4)
             if template == "3":
