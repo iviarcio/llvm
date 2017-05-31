@@ -16,12 +16,12 @@ import sys
 Header_kernel_0 = """
 __kernel void kernel_0 (__global _dataType_ *input,
                         __global _dataType_ *S,
-                        const unsigned int n) {
+                        const int n) {
 """
 
 Header_kernel_1 = """
 __kernel void kernel_1 (__global _dataType_ *input,
-                        const unsigned int n) {
+                        const int n) {
 """
 
 Header_kernel_2_input = """
@@ -41,13 +41,14 @@ __kernel void kernel_2(__global _dataType_ *output,
 
 Body_0 = """
 	int tid = get_local_id(0);
-	int gid = get_global_id(0);
 	int bid = get_group_id(0);
+	int size = get_local_size(0);
 	int offset = 1;
  	/* Cache the computational window in shared memory */
  	__local _dataType_ block [1024];
 
- 	block[tid] = input[gid];
+ 	block[tid] = input[tid + 2*size*bid];
+ 	block[tid + n/2] = input[tid + n/2 + 2*size*bid];
  	/* build the sum in place up the tree */
 	for (int d = n >> 1; d > 0; d >>= 1) {
 		barrier (CLK_LOCAL_MEM_FENCE);
@@ -85,7 +86,8 @@ Body_3 = """
 Body_4 = """		}
 	}
 	barrier (CLK_LOCAL_MEM_FENCE);
-	input[gid] = block[tid];
+	input[tid + 2*size*bid] = block[tid];
+	input[tid + n/2 + 2*size*bid] = block[tid + n/2];
 }
 """
 
@@ -109,11 +111,11 @@ Tail_output_basic = """	output[gid] = input[gid] _operation_ S[bid];
 }
 """
 
-Tail_input_user = """    input[gid] = _operation_(input[gid], S[bid]);
+Tail_input_user = """    input[gid] = _operation_(S[bid], input[gid]);
 }
 """
 
-Tail_output_user = """	output[gid] = _operation_(input[gid], S[bid]);
+Tail_output_user = """	output[gid] = _operation_(S[bid], input[gid]);
 }
 """
 
