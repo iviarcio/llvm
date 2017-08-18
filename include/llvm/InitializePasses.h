@@ -19,6 +19,10 @@ namespace llvm {
 
 class PassRegistry;
 
+/// initialize DCAO
+/// TransformUtils library
+void initializeDCAOPass(PassRegistry&);
+
 /// initializeCore - Initialize all passes linked into the
 /// TransformUtils library.
 void initializeCore(PassRegistry&);

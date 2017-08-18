@@ -25,6 +25,14 @@ class Function;
 class BasicBlock;
 class GlobalValue;
 
+
+//===----------------------------------------------------------------------===//
+//
+// DCAO.
+ModulePass *createDCAOPass( int dbg );
+
+
+
 //===----------------------------------------------------------------------===//
 //
 // These functions removes symbols from functions and modules.  If OnlyDebugInfo

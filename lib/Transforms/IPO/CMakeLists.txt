@@ -20,6 +20,9 @@ add_llvm_library(LLVMipo
   PruneEH.cpp
   StripDeadPrototypes.cpp
   StripSymbols.cpp
+  ../DCAO/CoherenceOptimization.cpp
+  ../DCAO/CoherenceAnalysis.cpp
+  ../DCAO/dataflow.cpp
   )
 
 add_dependencies(LLVMipo intrinsics_gen)

@@ -160,6 +160,7 @@ namespace {
       (void) llvm::createPartiallyInlineLibCallsPass();
       (void) llvm::createScalarizerPass();
       (void) llvm::createSeparateConstOffsetFromGEPPass();
+      (void) llvm::createDCAOPass(1);
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::FindUsedTypes();

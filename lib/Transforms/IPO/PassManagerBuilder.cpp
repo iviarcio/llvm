@@ -29,6 +29,17 @@
 using namespace llvm;
 
 static cl::opt<bool>
+DCAO("dcao",
+     cl::desc("Data Coherence Analysis and Optmization"));
+
+
+static cl::opt<bool>
+DCAO_debug("dcao_debug",
+           cl::desc("Data Coherence Analysis and Optmization with Debug"));
+
+
+
+static cl::opt<bool>
 RunLoopVectorization("vectorize-loops", cl::Hidden,
                      cl::desc("Run the Loop vectorization passes"));
 
@@ -70,6 +81,8 @@ PassManagerBuilder::PassManagerBuilder() {
     LoopVectorize = RunLoopVectorization;
     RerollLoops = RunLoopRerolling;
     LoadCombine = RunLoadCombine;
+    dcao = DCAO;
+    dcao_debug = DCAO_debug;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -279,6 +292,13 @@ void PassManagerBuilder::populateModulePassManager(PassManagerBase &MPM) {
       MPM.add(createConstantMergePass());     // Merge dup global constants
     }
   }
+
+  if(dcao_debug){
+    MPM.add(createDCAOPass(1));
+  } else if(dcao){
+    MPM.add(createDCAOPass(0));
+  }
+
   addExtensionsToPM(EP_OptimizerLast, MPM);
 }
 
