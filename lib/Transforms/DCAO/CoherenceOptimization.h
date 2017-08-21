@@ -55,6 +55,8 @@ namespace llvm{
                         Value *malloc,
                         std::map<Value*,int> &mallocs_uses);
 
+      void error_message(int msg);
+
       void du_chain(Instruction *instr, 
                     std::set<Value*> &GPUBuffer,
                     bool foundVar, 

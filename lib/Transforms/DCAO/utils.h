@@ -24,6 +24,7 @@
 #define R_  1
 #define W_  2
 #define RW_ 3
+#define RWnBlock_ 4
 
 #define cpu_ 1
 #define gpu_ 2

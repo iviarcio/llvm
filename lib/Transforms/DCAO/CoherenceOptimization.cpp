@@ -29,6 +29,13 @@ bool DCAO::runOnModule(Module &M) {
   Analysis->hasDivergence = false;
   Analysis->domain = buildDomain(M);
 
+  if(Analysis->domain.size() == 0){
+    error_message(0);
+    return false;
+  }
+
+  Analysis->hasKernel = false;
+
   for (Module::iterator FI = M.begin(), E = M.end(); FI != E; ++FI) {
     if (Analysis->hasDivergence) continue;
 
@@ -38,8 +45,8 @@ bool DCAO::runOnModule(Module &M) {
   }
 
   /* DCA validate */
-  if (Analysis->hasDivergence){
-    errs() << "Data Coherence Analysis and Optimization cannot be applied on this program \n";
+  if (Analysis->hasDivergence || !Analysis->hasKernel){
+    error_message(1);
     return false;
   }
 
@@ -65,6 +72,17 @@ bool DCAO::runOnModule(Module &M) {
   tryRemoveMapAndUnmapFromLoop();
 
   return true;
+}
+
+
+void DCAO::error_message(int msg) {
+  errs() << "Data Coherence Analysis and Optimization cannot be applied on this program \n";
+
+  if(msg == 0){
+    errs() << "There is no domain to execute DCA\n";
+  }else {
+    errs() << "There is no Kernel or the program has divergence that DCAO cannot handle\n";
+  }
 }
 
 /* This function create the domain of DCA.
@@ -300,7 +318,7 @@ void DCAO::createBuffer(Value *malloc,
   args.clear();
   args.push_back(llvm::Type::getInt32Ty(M.getContext()));
   FunctionType *FuncTypeMap = FunctionType::get(Type::getInt8PtrTy(M.getContext()), args, false);
-  Constant *createMap = M.getOrInsertFunction("_cl_map_buffer_write", FuncTypeMap);
+  Constant *createMap = M.getOrInsertFunction("_cl_map_buffer_write_invalidate_region", FuncTypeMap);
 
   Function *FuncMap = cast<Function>(createMap);
 
@@ -411,7 +429,8 @@ void DCAO::changeKernelArgs(Module &M){
         if (CallInst *clBuffer = dyn_cast<CallInst>(secondArgument)){
           if (clBuffer->getCalledFunction()->getName() == "_cl_map_buffer_write" ||
               clBuffer->getCalledFunction()->getName() == "_cl_map_buffer_read" ||
-              clBuffer->getCalledFunction()->getName() == "_cl_map_buffer_read_write"){
+              clBuffer->getCalledFunction()->getName() == "_cl_map_buffer_read_write" || 
+              clBuffer->getCalledFunction()->getName() == "_cl_map_buffer_write_invalidate_region" ){
             v = secondArgument;
           }
         }else{
@@ -1172,7 +1191,7 @@ void DCAO::applyMapAndUnmapInstructions(Module &M,
           it_instCA = instCA.find(buffer);
           caBB = it_instCA->second;
           if (caBB.scope_bot == gpu_) {
-            map(position, M, BB_back->getTerminator(), caBB.status_bot);
+            map(position, M, BB_back->getTerminator(), RWnBlock_);
           }
         }
       }
@@ -1214,6 +1233,8 @@ void DCAO::map(int buffer,
     typeOfAccess = "_cl_map_buffer_read";
   else if (status == W_)
     typeOfAccess = "_cl_map_buffer_write";
+  else if(status == RWnBlock_)
+    typeOfAccess = "_cl_map_buffer_read_write_nBlock";
   else
     typeOfAccess = "_cl_map_buffer_read_write";
 

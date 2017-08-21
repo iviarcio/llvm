@@ -3,10 +3,7 @@
 using namespace llvm;
 
 bool CoherenceAnalysis::runOnFunction(Function &F) {
-  bool modified = false;
-
   DataFlow dataflow;
-
 
   computeS_Gen_Kill(F, i_GenKill);
   if(this->hasDivergence) return false;
@@ -16,13 +13,13 @@ bool CoherenceAnalysis::runOnFunction(Function &F) {
 
   computeBB_Gen_Kill(F, i_InOut, bb_GenKill);
   if(this->hasDivergence) return false;
-  
+
   dataflow.computeBB_In_Out(F, bb_GenKill, bb_InOut, domain);
   if(this->hasDivergence) return false;
 
   dataflow.computeS_In_Out(F, i_GenKill, i_InOut, bb_InOut, domain);
 
-  return modified;
+  return false;
 }
 
 /* Generate the GEN-KILL set of each Basic Block */
@@ -98,8 +95,12 @@ void CoherenceAnalysis::GPU_GEN(Function &F,
                                 genKill> &i_GenKill,
                                 std::vector<Instruction *> kernels) {
 
+
   std::map<Instruction *, std::vector<Instruction *>> kernelArgs;
   std::vector<Instruction *> args;
+
+  /* Identify if at least one Function of the Module has one GPU kernel */ 
+  if(kernels.size() > 0) this->hasKernel = true;
 
   /* Identify which buffers are used by a given kernel */
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {

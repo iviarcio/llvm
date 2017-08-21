@@ -21,6 +21,7 @@ private:
                          DenseMap<const Instruction *, genKill> &i_GenKill);
 
 public:
+  bool hasKernel;
   bool hasDivergence;
   DenseMap<const Instruction *, genKill> i_GenKill;
   DenseMap<const Instruction *, inOut> i_InOut;
