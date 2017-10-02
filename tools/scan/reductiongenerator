@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+# =================================================================
+# generator -- OpenCL kernel Reduction generator
+#
+# This is the kernel generate program for parallel Reduction,
+# which just parse command-line options, figures out which template
+# must be used and append the selected template to the kernel file.
+#
+# Copyright (C) 2017, Marcio Machado Pereira
+# License: BSD
+# =================================================================
+
+import os
+import sys
+
+
+Body_0 = """
+__kernel void kernel_0 (__global _dataType_ *input,
+                        __global _dataType_ *S,
+                        const int n) {
+    int tid = get_local_id(0);
+    int gid = get_global_id(0);
+    int bid = get_group_id(0);
+    int size = get_local_size(0);
+     /*Cache the computational window in shared memory*/
+     __local _dataType_ block [1024];
+     block[tid] = input[gid];
+     barrier(CLK_LOCAL_MEM_FENCE);
+     for(int offset = get_local_size(0) / 2; offset > 0; offset >>= 1) {
+        if( tid < offset) {
+          block[tid] = block[tid + offset] _operation_ block[tid];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    if ( tid == 0) {
+        S[bid] = block[0];
+      }
+}
+"""
+
+Body_1 = """
+__kernel void kernel_1 (__global _dataType_ *input, __global _dataType_ *output,
+                            const int n) {
+    int tid = get_local_id(0);
+    int gid = get_global_id(0);
+    int bid = get_group_id(0);
+    int size = get_local_size(0);
+     /*Cache the computational window in shared memory*/
+     __local _dataType_ block [1024];
+     block[tid] = input[gid];
+     barrier(CLK_LOCAL_MEM_FENCE);
+     for(int offset = get_local_size(0) / 2; offset > 0; offset >>= 1) {
+        if( tid < offset) {
+          block[tid] = block[tid + offset] _operation_ block[tid];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    if ( tid == 0) {
+        *output = block[0];
+      }
+}
+"""
+
+Body_2 = """
+__kernel void kernel_0 (__global _dataType_ *input,
+                        __global _dataType_ *S,
+                        const int n) {
+    int tid = get_local_id(0);
+    int gid = get_global_id(0);
+    int bid = get_group_id(0);
+    int size = get_local_size(0);
+     /*Cache the computational window in shared memory*/
+     __local _dataType_ block [1024];
+     block[tid] = input[gid];
+     barrier(CLK_LOCAL_MEM_FENCE);
+     for(int offset = get_local_size(0) / 2; offset > 0; offset >>= 1) {
+        if( tid < offset) {
+          block[tid] = _operation_ ( block[tid + offset] , block[tid] );
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    if ( tid == 0) {
+        S[bid] = block[0];
+      }
+}
+"""
+
+Body_3 = """
+__kernel void kernel_1 (__global _dataType_ *input, __global _dataType *output,
+                            const int n) {
+    int tid = get_local_id(0);
+    int gid = get_global_id(0);
+    int bid = get_group_id(0);
+    int size = get_local_size(0);
+     /*Cache the computational window in shared memory*/
+     __local _dataType_ block [1024];
+     block[tid] = input[gid];
+     barrier(CLK_LOCAL_MEM_FENCE);
+     for(int offset = get_local_size(0) / 2; offset > 0; offset >>= 1) {
+        if( tid < offset) {
+          block[tid] = _operation_ ( block[tid + offset] , block[tid] );
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    if ( tid == 0) {
+        *output = block[0];
+      }
+}
+"""
+
+
+def run_reduction_generator():
+    # Run the command-line of kernel scan generator.
+    if len(sys.argv) < 3:
+        print("<<Reduction generator>> Input Error")
+
+    filename = sys.argv[1]
+    template = sys.argv[2]
+    operName = sys.argv[3]
+    with open(filename, 'a') as file:
+        if template == "1":
+            # basic operation
+            file.write(Body_0.replace("_operation_", operName) + Body_1.replace("_operation_", operName))
+        else:
+            # User-defined operation
+            file.write(Body_2.replace("_operation_", operName) + Body_3.replace("_operation_", operName))
+        file.close()
+
+    os.rename(filename, filename + ".cl")
+
+
+if __name__ == '__main__':
+    run_reduction_generator()
