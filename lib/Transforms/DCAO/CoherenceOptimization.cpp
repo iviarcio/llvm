@@ -149,11 +149,12 @@ void DCAO::initSharedMemory(Module &M) {
       CallInst *S = cast<CallInst>(instr);
       if (S->getCalledFunction()->getName() == "_cldevice_init") {
         _cl_device_init = instr;
-        next = &*I++;
+        next = ++I;
+        break;
       }
     }
   }
-  
+ 
   /* Define Arguments */
   std::vector<Type *> args;
   args.push_back(llvm::Type::getInt32Ty(M.getContext()));
@@ -318,7 +319,12 @@ void DCAO::createBuffer(Value *malloc,
   args.clear();
   args.push_back(llvm::Type::getInt32Ty(M.getContext()));
   FunctionType *FuncTypeMap = FunctionType::get(Type::getInt8PtrTy(M.getContext()), args, false);
+
+#ifdef dcao_NVIDIA
   Constant *createMap = M.getOrInsertFunction("_cl_map_buffer_write_invalidate_region", FuncTypeMap);
+#else 
+  Constant *createMap = M.getOrInsertFunction("_cl_map_buffer_write", FuncTypeMap);
+#endif
 
   Function *FuncMap = cast<Function>(createMap);
 
