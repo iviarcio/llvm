@@ -73,8 +73,31 @@ namespace llvm{
       void changeKernelArgs(Module &M);
       void updateDCAData(Module &M,
                          CoherenceAnalysis *Analysis);
-      void applyMapAndUnmapInstructions(Module &M,
-                                        CoherenceAnalysis *Analysis);
+      void applyMapAndUnmapModule(Module &M,
+                                  CoherenceAnalysis *Analysis);
+
+      void applyMapAndUnmapBasicBlock(Module &M,
+                                      BasicBlock *BB, 
+                                      CoherenceAnalysis *Analysis, 
+                                      CA *ca,
+                                      Value* buffer,
+                                      int position, 
+                                      int &scope, 
+                                      int &status, 
+                                      bool isCreated, 
+                                      bool isBuffer);
+
+      void applyMapAndUnmapBasicBlockSucc(Module &M,
+                                          BasicBlock *BB,
+                                          CoherenceAnalysis *Analysis,
+                                          Value *buffer,
+                                          std::set<BasicBlock *> &visitedBB, 
+                                          std::set<BasicBlock *> &checkAfter,
+                                          int &totalBB,
+                                          int &status,
+                                          int &scope,
+                                          int position);
+
       void removeOffload(Module &M);
       void removeGPUUnnecessaryCalls(Module &M);
       int getNumberOfPredecessor(BasicBlock* BB);

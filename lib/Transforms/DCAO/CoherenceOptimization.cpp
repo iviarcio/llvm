@@ -49,7 +49,7 @@ bool DCAO::runOnModule(Module &M) {
     error_message(1);
     return false;
   }
-
+  
   /* Insert the instruction call _cl_init_shared_buffer */
   initSharedMemory(M);
   
@@ -61,9 +61,9 @@ bool DCAO::runOnModule(Module &M) {
 
   /* Update DCA informations ghatered during the Analysis */
   updateDCAData(M, Analysis);
-
+  
   /* Applying map and unmap instructions */
-  applyMapAndUnmapInstructions(M, Analysis);
+  applyMapAndUnmapModule(M, Analysis);
 
   /* Cleaning the code */
   removeGPUUnnecessaryCalls(M);
@@ -140,7 +140,6 @@ std::map<Value *, std::set<Value *>> DCAO::buildCG(Module &M) {
 void DCAO::initSharedMemory(Module &M) {
   Function *main = M.getFunction("main");
   BasicBlock *entry = &main->getEntryBlock();
-  Instruction *next;
 
   for (BasicBlock::iterator I = entry->begin(), IE = entry->end(); I != IE; ++I) {
     Instruction *instr = &*I;
@@ -149,7 +148,6 @@ void DCAO::initSharedMemory(Module &M) {
       CallInst *S = cast<CallInst>(instr);
       if (S->getCalledFunction()->getName() == "_cldevice_init") {
         _cl_device_init = instr;
-        next = ++I;
         break;
       }
     }
@@ -172,7 +170,7 @@ void DCAO::initSharedMemory(Module &M) {
 
   /* Creating CallInst and setting it after _cldevice_init */
   Function *FuncInitSharedBuffer = cast<Function>(createRefInit);
-  CallInst *createFuncInit = CallInst::Create(FuncInitSharedBuffer, argumentsDbg, "", next);
+  CallInst *createFuncInit = CallInst::Create(FuncInitSharedBuffer, argumentsDbg, "", _cl_device_init);
 
   /* Setting Attribute */
   AttributeSet gpuClangAttributes = cast<CallInst>(_cl_device_init)->getAttributes();
@@ -774,9 +772,311 @@ void DCAO::removeGPUUnnecessaryCalls(Module &M) {
   }
 }
 
+
+/* This function uses DCA's informations to set map and unmap 
+ * instructions inside a Basic Block */
+void DCAO::applyMapAndUnmapBasicBlock(Module &M,
+                                      BasicBlock *BB, 
+                                      CoherenceAnalysis *Analysis, 
+                                      CA *ca,
+                                      Value* buffer,
+                                      int position, 
+                                      int &scope, 
+                                      int &status, 
+                                      bool isCreated, 
+                                      bool isBuffer){
+
+  Instruction *instr = &BB->front();
+  status = ca->status_top;
+  scope = ca->scope_top;
+
+  inOut iInOut = Analysis->i_InOut.lookup(instr);
+
+  /* Checking if there is transitions between instructions inside
+     a basic block */
+  for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I) {
+    instr = &*I;
+    if (isCreated && !isBuffer) {
+      if (instr == buffer)
+        isBuffer = true;
+      else
+        continue;
+    }
+
+    /* It is possible to insert instructions only after all PHINodes */
+    if(isa<PHINode>(instr)) continue;
+    else if(isa<BitCastInst>(instr)) continue;
+    else if(isa<AllocaInst>(instr)) continue;
+    else if(checkCallSetDevice(instr)) continue;
+
+    inOut i = Analysis->i_InOut.lookup(instr);
+    tuple t = i.out.lookup(buffer);
+
+    if (!instr->isTerminator()) {
+      BasicBlock::iterator Inext = I;
+      Inext++;
+      instr = &*Inext;
+    }
+
+    /* IN[var] = (v,R,CPU) */
+    if (scope == cpu_ && status == R_) {
+      if (t.scope == cpu_ && t.status != R_)
+        status = t.status;
+      else if (t.status != R_ && t.scope == gpu_) {
+        scope = gpu_;
+        status = t.status;
+        unmap(position, M, instr);
+      }
+      /* IN[var] = (v,W,CPU) */
+    } else if (scope == cpu_ && status == W_) {
+      if (t.scope == gpu_) {
+        scope = gpu_;
+        status = t.status;
+        unmap(position, M, instr);
+      } else if (t.scope == cpu_ && t.status == RW_)
+        status = RW_;
+      /* IN[var] = (v,RW,CPU) */
+    } else if (scope == cpu_ && status == RW_) {
+      if (t.scope == gpu_) {
+        scope = gpu_;
+        status = t.status;
+        unmap(position, M, instr);
+      } else if (t.scope == cpu_ && t.status != RW_)
+        status = RW_;
+      /* IN[var] = (v,R,GPU) */
+    } else if (scope == gpu_ && status == R_) {
+      if (t.scope == cpu_) {
+        scope = cpu_;
+        status = t.status;
+        map(position, M, instr, status);
+      } else if (t.scope == gpu_)
+        status = t.status;
+      /* IN[var] = (v,W,GPU) */
+    } else if (scope == gpu_ && status == W_) {
+      if (t.scope == cpu_) {
+        scope = cpu_;
+        status = t.status;
+        map(position, M, instr, status);
+      } else if (t.scope == gpu_ && t.status == RW_)
+        status = RW_;
+      /* IN[var] = (v,RW,GPU) */
+    } else if (scope == gpu_ && status == RW_) {
+      if (t.scope == cpu_) {
+        scope = cpu_;
+        status = t.status;
+        map(position, M, instr, status);
+      } else if (t.scope == gpu_ && t.status != RW_)
+        status = RW_;
+    }
+  }
+
+  ca->status_bot = status;
+  ca->scope_bot = scope;
+}
+
+/* This function uses DCA's informations to set map and unmap 
+ * instructions between a Basic Block and its successors */
+void DCAO::applyMapAndUnmapBasicBlockSucc(Module &M,
+                                    BasicBlock *BB,
+                                    CoherenceAnalysis *Analysis,
+                                    Value *buffer,
+                                    std::set<BasicBlock *> &visitedBB, 
+                                    std::set<BasicBlock *> &checkAfter,
+                                    int &totalBB,
+                                    int &status,
+                                    int &scope,
+                                    int position){
+
+  /* Check if there is any BB succ that has x as Scope */
+  for (succ_iterator succ_itBB = succ_begin(BB), succ_etBB = succ_end(BB); succ_itBB != succ_etBB; ++succ_itBB) {
+    BasicBlock *BB_succ = *succ_itBB;
+    inOut succInOutBB = Analysis->bb_InOut.lookup(BB_succ);
+    tuple t = succInOutBB.in.lookup(buffer);
+
+    std::map<BasicBlock *, std::map<Value *, CA>>::iterator itSucc;
+    std::map<Value *, CA>::iterator it_varCASucc;
+    std::map<Value *, CA> *ptr_varCASucc;
+    BasicBlock *bbMap;
+
+    int numberOfPredecessor = getNumberOfPredecessor(BB_succ);
+    int numberOfSuccessor = getNumberOfSuccessor(BB);
+    int new_scope, new_status;
+    new_status = 0;
+
+    int updateCA = true;
+    bool hasCPU = false;
+    bool hasGPU = false;
+
+    if (t.scope == X_) {
+      /* Check if all Predecessor of BB_succ were visited.
+         If they were, then include the BB_succ into the set checkAfter set. */
+      if (numberOfPredecessor > 1) {
+        bool wereVisited = true;
+
+        if (!predBBWereVisited(BB_succ, visitedBB)) {
+          updateCA = false;
+          wereVisited = false;
+          checkAfter.insert(BB_succ);
+        }
+
+        /* Check if there is the following combination between at least two 
+         * predecessor of the BB_succ: CA_1 = gpu and CA_2 = cpu */
+        if (wereVisited) {
+          isCombination(BB_succ, &hasCPU, &hasGPU, &new_status, buffer);
+
+          if (hasCPU && hasGPU) {
+            new_scope = cpu_;
+            new_status = RW_;
+
+            for (pred_iterator pred_it = pred_begin(BB_succ),
+                 pred_et = pred_end(BB_succ); pred_it != pred_et; ++pred_it) {
+              BasicBlock *BB_pred = *pred_it;
+              itSucc = CAMapUnmap.find(BB_pred);
+              ptr_varCASucc = &itSucc->second;
+              it_varCASucc = ptr_varCASucc->find(buffer);
+              CA *caBB = &it_varCASucc->second;
+
+              /* Create a new basic block between BB_succ and BBpred_succ */
+              if (caBB->scope_bot == gpu_) {
+                int predBBNumberOfSucc = getNumberOfSuccessor(BB_pred);
+                if (predBBNumberOfSucc > 1) {
+                  totalBB++;
+                  BranchInst *BI = createNewBB(M, BB_pred, BB_succ, bbMap);
+                  updatePHINode(BB_pred, BB_succ, BI->getParent());
+                  map(position, M, BI, RW_);
+                  updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
+                } else {
+                  TerminatorInst *terminator = BB_pred->getTerminator();
+                  map(position, M, terminator, RW_);
+                  caBB->status_bot = new_status;
+                  caBB->scope_bot = new_scope;
+                }
+              }
+            }
+          } else {
+            if (hasCPU)
+              new_scope = cpu_;
+            else if (hasGPU)
+              new_scope = gpu_;
+          }
+
+          if(checkAfter.count(BB_succ)){
+            checkAfter.erase(BB_succ);
+          }
+        }
+      } else {
+        new_status = status;
+        new_scope = scope;
+      }
+
+      /* If IN[BB_succ] == cpu */
+    } else if (t.scope == cpu_) {
+      if (scope == gpu_) {
+        new_status = t.status;
+        new_scope = t.scope;
+        if (numberOfPredecessor > 1 && numberOfSuccessor > 1) {
+          totalBB++;
+          BranchInst *BI = createNewBB(M, BB, BB_succ, bbMap);
+          updatePHINode(BB, BB_succ, BI->getParent());
+          map(position,  M, BI, t.status);
+          updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
+        } else if (numberOfSuccessor > 1) {
+          Instruction *firstInst = BB_succ->getFirstNonPHI(); 
+          map(position, M, firstInst, t.status);
+        } else {
+          TerminatorInst *terminator = BB->getTerminator();
+          map(position, M, terminator, t.status);
+          itSucc = CAMapUnmap.find(BB);
+          ptr_varCASucc = &itSucc->second;
+          it_varCASucc = ptr_varCASucc->find(buffer);
+          CA *caBB = &it_varCASucc->second;
+          caBB->scope_bot = new_scope;
+          caBB->status_bot = new_status;
+        }
+      } else {
+        new_status = status;
+        new_scope = scope;
+      }
+      /* if IN[BB_succ] == gpu */
+    } else if (t.scope == gpu_) {
+      if ((scope == cpu_ && status != R_) || (scope == cpu_ && t.status != R_)) {
+        new_status = t.status;
+        new_scope = t.scope;
+        if (numberOfPredecessor > 1 && numberOfSuccessor > 1) {
+          totalBB++;
+          BranchInst *BI = createNewBB(M, BB, BB_succ, bbMap);
+          updatePHINode(BB, BB_succ, BI->getParent());
+          unmap(position, M, BI);
+          updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
+        } else if (numberOfSuccessor > 1) { 
+          Instruction *firstInst = BB_succ->getFirstNonPHI(); 
+          unmap(position, M, firstInst);
+        } else {
+          TerminatorInst *terminator = BB->getTerminator();
+          unmap(position, M, terminator);
+          itSucc = CAMapUnmap.find(BB);
+          ptr_varCASucc = &itSucc->second;
+          it_varCASucc = ptr_varCASucc->find(buffer);
+          CA *caBB = &it_varCASucc->second;
+          caBB->scope_bot = new_scope;
+          caBB->status_bot = new_status;
+        }
+      } else {
+        new_status = status;
+        new_scope = scope;
+      }
+      /* If IN[BB_succ] == "" */
+    } else {
+      if (!predBBWereVisited(BB_succ, visitedBB)) {
+        updateCA = false;
+        checkAfter.insert(BB_succ);
+      } else {
+        if (checkAfter.count(BB_succ))
+          checkAfter.erase(BB_succ);
+        if (numberOfPredecessor > 1) {
+          isCombination(BB_succ, &hasCPU, &hasGPU, &new_status, buffer);
+          if (hasCPU && hasGPU)
+            new_scope = cpu_;
+          else if (hasCPU)
+            new_scope = cpu_;
+          else
+            new_scope = gpu_;
+        } else {
+          new_status = status;
+          new_scope = scope;
+        }
+      }
+    }
+
+    if (updateCA) {
+      /* Updating CA of BB_succ*/
+      if (!CAMapUnmap.count(BB_succ) && !checkAfter.count(BB_succ)) {
+        std::map<Value *, CA> newBBCA;
+        CAMapUnmap.insert(std::make_pair(BB_succ, newBBCA));
+      }
+
+      itSucc = CAMapUnmap.find(BB_succ);
+      ptr_varCASucc = &itSucc->second;
+
+      if (!ptr_varCASucc->count(buffer)) {
+        CA caBB;
+        caBB.scope_top = new_scope;
+        caBB.status_top = new_status;
+        ptr_varCASucc->insert(std::make_pair(buffer, caBB));
+      } else {
+        it_varCASucc = ptr_varCASucc->find(buffer);
+        CA *caBB = &it_varCASucc->second;
+        caBB->scope_top = new_scope;
+        caBB->status_top = new_status;
+      }
+    }
+  }
+}
+
+
 /* This function uses DCA's informations to set map and unmap instructions */
-void DCAO::applyMapAndUnmapInstructions(Module &M, 
-                                        CoherenceAnalysis *Analysis) {
+void DCAO::applyMapAndUnmapModule(Module &M, 
+                                  CoherenceAnalysis *Analysis) {
 
   std::vector<BasicBlock *> reachableBB;
   std::set<BasicBlock *> visitedBB;
@@ -883,279 +1183,19 @@ void DCAO::applyMapAndUnmapInstructions(Module &M,
           it = CAMapUnmap.find(BB);
           ptr_varCA = &it->second;
           it_varCA = ptr_varCA->find(buffer);
-
-          Instruction *instr = &BB->front();
           CA *ca = &it_varCA->second;
-          status = ca->status_top;
-          scope = ca->scope_top;
 
-          inOut iInOut = Analysis->i_InOut.lookup(instr);
+          /* Identify points inside a Basic Block where it is 
+           * necessary to insert map/unmap functions */
+          applyMapAndUnmapBasicBlock(M, BB, Analysis, ca, buffer, 
+                                     position, scope, status, isCreated, isBuffer);
 
-          /* Checking if there is transitions between instructions inside
-             a basic block */
-          for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I) {
-            instr = &*I;
-            if (isCreated && !isBuffer) {
-              if (instr == buffer)
-                isBuffer = true;
-              else
-                continue;
-            }
 
-            /* It is possible to insert instructions only after all PHINodes */
-            if(isa<PHINode>(instr)) continue;
-            else if(isa<BitCastInst>(instr)) continue;
-            else if(isa<AllocaInst>(instr)) continue;
-            else if(checkCallSetDevice(instr)) continue;
-
-            inOut i = Analysis->i_InOut.lookup(instr);
-            tuple t = i.out.lookup(buffer);
-
-            if (!instr->isTerminator()) {
-              BasicBlock::iterator Inext = I;
-              Inext++;
-              instr = &*Inext;
-            }
-
-            /* IN[var] = (v,R,CPU) */
-            if (scope == cpu_ && status == R_) {
-              if (t.scope == cpu_ && t.status != R_)
-                status = t.status;
-              else if (t.status != R_ && t.scope == gpu_) {
-                scope = gpu_;
-                status = t.status;
-                unmap(position, M, instr);
-              }
-              /* IN[var] = (v,W,CPU) */
-            } else if (scope == cpu_ && status == W_) {
-              if (t.scope == gpu_) {
-                scope = gpu_;
-                status = t.status;
-                unmap(position, M, instr);
-              } else if (t.scope == cpu_ && t.status == RW_)
-                status = RW_;
-              /* IN[var] = (v,RW,CPU) */
-            } else if (scope == cpu_ && status == RW_) {
-              if (t.scope == gpu_) {
-                scope = gpu_;
-                status = t.status;
-                unmap(position, M, instr);
-              } else if (t.scope == cpu_ && t.status != RW_)
-                status = RW_;
-              /* IN[var] = (v,R,GPU) */
-            } else if (scope == gpu_ && status == R_) {
-              if (t.scope == cpu_) {
-                scope = cpu_;
-                status = t.status;
-                map(position, M, instr, status);
-              } else if (t.scope == gpu_)
-                status = t.status;
-              /* IN[var] = (v,W,GPU) */
-            } else if (scope == gpu_ && status == W_) {
-              if (t.scope == cpu_) {
-                scope = cpu_;
-                status = t.status;
-                map(position, M, instr, status);
-              } else if (t.scope == gpu_ && t.status == RW_)
-                status = RW_;
-              /* IN[var] = (v,RW,GPU) */
-            } else if (scope == gpu_ && status == RW_) {
-              if (t.scope == cpu_) {
-                scope = cpu_;
-                status = t.status;
-                map(position, M, instr, status);
-              } else if (t.scope == gpu_ && t.status != RW_)
-                status = RW_;
-            }
-          }
-
-          ca->status_bot = status;
-          ca->scope_bot = scope;
-
-          /* Check if there is any BB succ that has x as Scope */
-          for (succ_iterator succ_itBB = succ_begin(BB), succ_etBB = succ_end(BB); succ_itBB != succ_etBB; ++succ_itBB) {
-            BasicBlock *BB_succ = *succ_itBB;
-            inOut succInOutBB = Analysis->bb_InOut.lookup(BB_succ);
-            tuple t = succInOutBB.in.lookup(buffer);
-
-            std::map<BasicBlock *, std::map<Value *, CA>>::iterator itSucc;
-            std::map<Value *, CA>::iterator it_varCASucc;
-            std::map<Value *, CA> *ptr_varCASucc;
-            BasicBlock *bbMap;
-
-            int numberOfPredecessor = getNumberOfPredecessor(BB_succ);
-            int numberOfSuccessor = getNumberOfSuccessor(BB);
-            int new_scope, new_status;
-            new_status = 0;
-
-            int updateCA = true;
-            bool hasCPU = false;
-            bool hasGPU = false;
-
-            if (t.scope == X_) {
-              /* Check if all Predecessor of BB_succ were visited.
-                 If they were, then include the BB_succ into the set checkAfter set. */
-              if (numberOfPredecessor > 1) {
-                bool wereVisited = true;
-
-                if (!predBBWereVisited(BB_succ, visitedBB)) {
-                  updateCA = false;
-                  wereVisited = false;
-                  checkAfter.insert(BB_succ);
-                }
-
-                /* Check if there is the following combination between at least two 
-                 * predecessor of the BB_succ: CA_1 = gpu and CA_2 = cpu */
-                if (wereVisited) {
-                  isCombination(BB_succ, &hasCPU, &hasGPU, &new_status, buffer);
-
-                  if (hasCPU && hasGPU) {
-                    new_scope = cpu_;
-                    new_status = RW_;
-
-                    for (pred_iterator pred_it = pred_begin(BB_succ),
-                         pred_et = pred_end(BB_succ); pred_it != pred_et; ++pred_it) {
-                      BasicBlock *BB_pred = *pred_it;
-                      itSucc = CAMapUnmap.find(BB_pred);
-                      ptr_varCASucc = &itSucc->second;
-                      it_varCASucc = ptr_varCASucc->find(buffer);
-                      CA *caBB = &it_varCASucc->second;
-
-                      /* Create a new basic block between BB_succ and BBpred_succ */
-                      if (caBB->scope_bot == gpu_) {
-                        int predBBNumberOfSucc = getNumberOfSuccessor(BB_pred);
-                        if (predBBNumberOfSucc > 1) {
-                          totalBB++;
-                          BranchInst *BI = createNewBB(M, BB_pred, BB_succ, bbMap);
-                          updatePHINode(BB_pred, BB_succ, BI->getParent());
-                          map(position, M, BI, RW_);
-                          updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
-                        } else {
-                          TerminatorInst *terminator = BB_pred->getTerminator();
-                          map(position, M, terminator, RW_);
-                          caBB->status_bot = new_status;
-                          caBB->scope_bot = new_scope;
-                        }
-                      }
-                    }
-                  } else {
-                    if (hasCPU)
-                      new_scope = cpu_;
-                    else if (hasGPU)
-                      new_scope = gpu_;
-                  }
-
-                  if(checkAfter.count(BB_succ)){
-                    checkAfter.erase(BB_succ);
-                  }
-                }
-              } else {
-                new_status = status;
-                new_scope = scope;
-              }
-
-              /* If IN[BB_succ] == cpu */
-            } else if (t.scope == cpu_) {
-              if (scope == gpu_) {
-                new_status = t.status;
-                new_scope = t.scope;
-                if (numberOfPredecessor > 1 && numberOfSuccessor > 1) {
-                  totalBB++;
-                  BranchInst *BI = createNewBB(M, BB, BB_succ, bbMap);
-                  updatePHINode(BB, BB_succ, BI->getParent());
-                  map(position,  M, BI, t.status);
-                  updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
-                } else if (numberOfSuccessor > 1) {
-                  Instruction *firstInst = BB_succ->getFirstNonPHI(); 
-                  map(position, M, firstInst, t.status);
-                } else {
-                  TerminatorInst *terminator = BB->getTerminator();
-                  map(position, M, terminator, t.status);
-                  itSucc = CAMapUnmap.find(BB);
-                  ptr_varCASucc = &itSucc->second;
-                  it_varCASucc = ptr_varCASucc->find(buffer);
-                  CA *caBB = &it_varCASucc->second;
-                  caBB->scope_bot = new_scope;
-                  caBB->status_bot = new_status;
-                }
-              } else {
-                new_status = status;
-                new_scope = scope;
-              }
-              /* if IN[BB_succ] == gpu */
-            } else if (t.scope == gpu_) {
-              if ((scope == cpu_ && status != R_) || (scope == cpu_ && t.status != R_)) {
-                new_status = t.status;
-                new_scope = t.scope;
-                if (numberOfPredecessor > 1 && numberOfSuccessor > 1) {
-                  totalBB++;
-                  BranchInst *BI = createNewBB(M, BB, BB_succ, bbMap);
-                  updatePHINode(BB, BB_succ, BI->getParent());
-                  unmap(position, M, BI);
-                  updateCANewBB(BI->getParent(), buffer, new_status, new_scope);
-                } else if (numberOfSuccessor > 1) { 
-                  Instruction *firstInst = BB_succ->getFirstNonPHI(); 
-                  unmap(position, M, firstInst);
-                } else {
-                  TerminatorInst *terminator = BB->getTerminator();
-                  unmap(position, M, terminator);
-                  itSucc = CAMapUnmap.find(BB);
-                  ptr_varCASucc = &itSucc->second;
-                  it_varCASucc = ptr_varCASucc->find(buffer);
-                  CA *caBB = &it_varCASucc->second;
-                  caBB->scope_bot = new_scope;
-                  caBB->status_bot = new_status;
-                }
-              } else {
-                new_status = status;
-                new_scope = scope;
-              }
-              /* If IN[BB_succ] == "" */
-            } else {
-              if (!predBBWereVisited(BB_succ, visitedBB)) {
-                updateCA = false;
-                checkAfter.insert(BB_succ);
-              } else {
-                if (checkAfter.count(BB_succ))
-                  checkAfter.erase(BB_succ);
-                if (numberOfPredecessor > 1) {
-                  isCombination(BB_succ, &hasCPU, &hasGPU, &new_status, buffer);
-                  if (hasCPU && hasGPU)
-                    new_scope = cpu_;
-                  else if (hasCPU)
-                    new_scope = cpu_;
-                  else
-                    new_scope = gpu_;
-                } else {
-                  new_status = status;
-                  new_scope = scope;
-                }
-              }
-            }
-
-            if (updateCA) {
-              /* Updating CA of BB_succ*/
-              if (!CAMapUnmap.count(BB_succ) && !checkAfter.count(BB_succ)) {
-                std::map<Value *, CA> newBBCA;
-                CAMapUnmap.insert(std::make_pair(BB_succ, newBBCA));
-              }
-
-              itSucc = CAMapUnmap.find(BB_succ);
-              ptr_varCASucc = &itSucc->second;
-
-              if (!ptr_varCASucc->count(buffer)) {
-                CA caBB;
-                caBB.scope_top = new_scope;
-                caBB.status_top = new_status;
-                ptr_varCASucc->insert(std::make_pair(buffer, caBB));
-              } else {
-                it_varCASucc = ptr_varCASucc->find(buffer);
-                CA *caBB = &it_varCASucc->second;
-                caBB->scope_top = new_scope;
-                caBB->status_top = new_status;
-              }
-            }
-          }
+          /* Identify points inside a Basic Block where it is 
+           * necessary to insert map/unmap functions */
+          applyMapAndUnmapBasicBlockSucc(M, BB, Analysis, buffer, 
+                                         visitedBB, checkAfter, totalBB, 
+                                         status, scope, position);
 
           /* Iterate over all instructions that belongs to the blockbasic BB,
              looking for transictions between CPU-GPU */
@@ -1197,7 +1237,7 @@ void DCAO::applyMapAndUnmapInstructions(Module &M,
           it_instCA = instCA.find(buffer);
           caBB = it_instCA->second;
           if (caBB.scope_bot == gpu_) {
-            map(position, M, BB_back->getTerminator(), RWnBlock_);
+            map(position, M, BB_back->getTerminator(), RW_);
           }
         }
       }
